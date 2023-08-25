@@ -40,7 +40,7 @@ List<IMyCubeBlock> allBlocks = new List<IMyCubeBlock>();
 
 float minThrust;
 
-bool tick = false;
+int tick = 0;
 int outerDoorDisableTimer = 0;
 int statusLightTimer = 0;
 int calculatedShipMass = 0;
@@ -57,7 +57,9 @@ public Program() {
 	GridTerminalSystem.GetBlocksOfType(controllers, block => block.IsFunctional && block.IsMainCockpit && block.CubeGrid.ToString() == gridId);
 
     if(!controllers.Any()) {
-        Log("No pilot seat!");
+        foreach(IMyTextPanel screen in statusScreens) {
+            screen.WriteText("No pilot seat!", false);
+        }
         return;
     }
 
@@ -482,18 +484,22 @@ string doStatusLights(int powerLevel, int oxygenLevel, int fuelLevel) {
         statusBlink = true;
     }
     
-    foreach(IMyInteriorLight light in statusLights) {
-        if(light.Color != statusColor) {
-            light.Enabled = (statusColor == Color.White ? false : true);
-            light.Color = statusColor;
-        }
+    if(statusLightTimer != 0) {
+        foreach(IMyInteriorLight light in statusLights) {
+            if(light.Color != statusColor) {
+                light.Enabled = (statusColor == Color.White ? false : true);
+                light.Color = statusColor;
+            }
 
-        if(statusBlink && light.BlinkLength == 0) {
-            light.BlinkLength = 50F;
-            light.BlinkIntervalSeconds = 2;
-        } else if(!statusBlink && light.BlinkLength != 0) {
-            light.BlinkIntervalSeconds = 0;
-            light.BlinkLength = 0;
+            if(statusBlink && light.BlinkLength == 0) {
+                light.BlinkLength = 50F;
+                light.BlinkIntervalSeconds = 2;
+            } else if(!statusBlink && light.BlinkLength != 0) {
+                light.BlinkIntervalSeconds = 0;
+                light.BlinkLength = 0;
+            }
+
+            if(light.Enabled) statusLightTimer = 5;
         }
     }
 
@@ -513,7 +519,7 @@ bool notAirtight() {
 }
 
 void Log(string text) {
-    IMyTextSurfaceProvider cockpitScreen = (IMyTextSurfaceProvider)GridTerminalSystem.GetBlockWithName(shipName + "PilotSeat");
+    IMyTextSurfaceProvider cockpitScreen = (IMyTextSurfaceProvider)GridTerminalSystem.GetBlockWithName(controller.CustomName);
     cockpitScreen.GetSurface(0).WriteText(text, false);
     foreach(IMyTextPanel screen in statusScreens) {
         screen.WriteText(text, false);
