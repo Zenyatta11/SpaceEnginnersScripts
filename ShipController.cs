@@ -1,4 +1,3 @@
-const int weightLimit = 0;
 
 ////// de aca para abajo no tocar \\\\\\
 
