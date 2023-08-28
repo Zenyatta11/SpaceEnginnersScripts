@@ -1,4 +1,3 @@
-const bool isHydrogenShip = true;
 const int weightLimit = 0;
 
 ////// de aca para abajo no tocar \\\\\\
@@ -45,6 +44,7 @@ int outerDoorDisableTimer = 0;
 int statusLightTimer = 0;
 int calculatedShipMass = 0;
 
+bool isHydrogenShip = false;
 bool hasOxygenTanks = false;
 bool airventDebounce;
 
@@ -131,6 +131,7 @@ public Program() {
     else if(isLanded) onLand();
 
     hasOxygenTanks = oxygenTanks.Any();
+    isHydrogenShip = hydrogenTanks.Any();
 	updateCalculatedShipMass();
 
 	foreach(IMyInteriorLight statusLight in statusLights) {
@@ -199,14 +200,9 @@ public void Main(string argument, UpdateType updateSource) {
 
     String textToShow = "Version " + VERSION + " of Program - " + getWorkingAnimation();
     textToShow = textToShow + "\n\t[" + getFillLevel(powerLevel) + "] " + String.Format("{0,4}", powerLevel) + "% | " + String.Format("{0,8}", "Power");
-
     if(hasOxygenTanks) textToShow = textToShow + "\n\t[" + getFillLevel(oxygenLevel) + "] " +  String.Format("{0,4}", oxygenLevel) + "% | " + String.Format("{0,8}", "Oxygen");
     if(isHydrogenShip) textToShow = textToShow + "\n\t[" + getFillLevel(fuelLevel) + "] " +  String.Format("{0,4}", fuelLevel) + "% | " + String.Format("{0,8}", "Fuel");
-
-    textToShow = textToShow + "\n\tisDocked: " + (isDocked ? "1" : "0") + "; wasDocked: " + (wasDocked ? "1" : "0") + "; gravity: " + controller.GetNaturalGravity().Sum;
-    textToShow = textToShow + "\n\tisAirtight:" + (notAirtight() ? "0" : "1") + "; thrustUsage: " + getThrusterLimitPercentage() + "%";
-    textToShow = textToShow + "\n\tisInSpace:" + (amInSpace() ? "1" : "0") + "; minThrust: " + minThrust + ";";
-    textToShow = textToShow + "\n\tupThrust: " + getTotalThrust(upThrusters) + "; calcShipMass: " + controller.CalculateShipMass().TotalMass + "; manualMass: " + calculatedShipMass;
+    textToShow = textToShow + "\n\tMinimum Thruster Usage: " + getThrusterLimitPercentage() + "%";
 
     String statusText = doStatusLights(powerLevel, oxygenLevel, fuelLevel);
     textToShow = textToShow + "\n" + statusText;
@@ -217,7 +213,6 @@ public void Main(string argument, UpdateType updateSource) {
 int getThrusterLimitPercentage() {
 	int totalMass = getShipMass();
 
-    if(weightLimit != 0) return (int)(totalMass / weightLimit);
 	return (int)(totalMass * 10F / minThrust * 100);
 }
 
@@ -232,9 +227,7 @@ float getTotalThrust(List<IMyThrust> thrusters) {
 }
 
 int getShipMass() {
-	if(getIsDocked()) {
-		return calculatedShipMass;
-	} else return (int)Math.Floor(controller.CalculateShipMass().TotalMass);
+	return (int)Math.Floor(controller.CalculateShipMass().PhysicalMass);
 }
 
 double getPowerLevel() {
@@ -468,8 +461,8 @@ string doStatusLights(int powerLevel, int oxygenLevel, int fuelLevel) {
         }
     }
 
-    if(getThrusterLimitPercentage() > 95) {
-        warningStatus.Add("Thruster limit");
+    if(getThrusterLimitPercentage() > 90) {
+        warningStatus.Add("Thruster limit 2");
         statusColor = depressurized;
         statusBlink = true;
     } else if(getThrusterLimitPercentage() > 85) {
@@ -484,17 +477,17 @@ string doStatusLights(int powerLevel, int oxygenLevel, int fuelLevel) {
         statusBlink = true;
     }
     
-    if(statusLightTimer != 0) {
+    if(statusLightTimer == 0) {
         foreach(IMyInteriorLight light in statusLights) {
             if(light.Color != statusColor) {
                 light.Enabled = (statusColor == Color.White ? false : true);
                 light.Color = statusColor;
             }
 
-            if(statusBlink && light.BlinkLength == 0) {
+            if(statusBlink && (light.BlinkLength != 50F || light.BlinkIntervalSeconds != 2)) {
                 light.BlinkLength = 50F;
                 light.BlinkIntervalSeconds = 2;
-            } else if(!statusBlink && light.BlinkLength != 0) {
+            } else if(!statusBlink && (light.BlinkLength != 0F || light.BlinkIntervalSeconds != 0)) {
                 light.BlinkIntervalSeconds = 0;
                 light.BlinkLength = 0;
             }
@@ -536,14 +529,11 @@ int getPowerAsInt(string text) {
     else if (values[1].Equals("MW")) return (int) (float.Parse(values[0])*1000000f);
     else if (values[1].Equals("MWh")) return (int) (float.Parse(values[0])*1000000f); 
     else return (int) float.Parse(values[0]);
-    
-    return 0;
 }
 
 int getPower(IMyTerminalBlock block, bool max) {   
     if (max && !block.IsBeingHacked) return getPowerAsInt(getDetailedInfoValue(block, "Max Stored Power"));
     else return getPowerAsInt(getDetailedInfoValue(block, "Stored power"));
-    return 0;
 }
 
 string getDetailedInfoValue(IMyTerminalBlock block, string name) {
