@@ -1,23 +1,17 @@
-static bool hasAirlock = false; // Settear si la puerta externa no se debe abrir fuera de lugares presurizados
-static bool landingGearInMainGrid = true; // Settear si el tren de aterrizaje esta en la grilla principal (false para subgrid)
-
-////// de aca para abajo no tocar \\\\\\
-
 static Color lowOxygen = Color.DarkBlue;
 static Color lowFuel = Color.Orange;
 static Color lowPower = Color.Yellow;
 static Color depressurized = Color.Red;
 static String gridId;
-const int VERSION = 3;
+const int VERSION = 1;
 
 List<IMyTextPanel> statusScreens = new List<IMyTextPanel>();
 List<IMyLandingGear> landingGear = new List<IMyLandingGear>();
 List<IMyBatteryBlock> batteries = new List<IMyBatteryBlock>();
 List<IMyShipConnector> connectors = new List<IMyShipConnector>();
-List<IMyCargoContainer> cargoContainers = new List<IMyCargoContainer>();
-
 List<IMyAirVent> airVents = new List<IMyAirVent>();
-IMyAirVent externalAirVent;
+IMyAirVent airSensor;
+List<IMyCargoContainer> cargoContainers = new List<IMyCargoContainer>();
 
 List<IMyGasTank> oxygenTanks = new List<IMyGasTank>();
 List<IMyGasTank> hydrogenTanks = new List<IMyGasTank>();
@@ -37,6 +31,9 @@ List<IMyThrust> frontThrusters = new List<IMyThrust>();
 List<IMyThrust> backThrusters = new List<IMyThrust>();
 List<IMyThrust> allThrusters = new List<IMyThrust>();
 
+List<IMyMotorStator> allHinges = new List<IMyMotorStator>();
+IMyMotorStator loadingRamp;
+
 IMyShipController controller;
 List<IMyCubeBlock> allBlocks = new List<IMyCubeBlock>();
 
@@ -47,18 +44,19 @@ int outerDoorDisableTimer = 0;
 int statusLightTimer = 0;
 int calculatedShipMass = 0;
 
-double hydrogenCapacity = 0;
-double hydrogenTotalPrevious = 0;
-double hydrogenTotal = 0;
-int maxCargoVolume = 0;
-
 bool isHydrogenShip = false;
 bool hasOxygenTanks = false;
 bool airventDebounce;
+bool isRampDown = false;
+
+bool isLandingLeftDown = false;
+bool isLandingRightDown = false;
+bool isLandingLocked = false;
+
+bool isWingLeftDown = false;
+bool isWingRightDown = false;
 
 public Program() {
-    Runtime.UpdateFrequency = UpdateFrequency.Update10;
-
     gridId = Me.CubeGrid.ToString();
     GridTerminalSystem.GetBlocksOfType(statusScreens, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
     GridTerminalSystem.GetBlocksOfType(allBlocks, block => block.CubeGrid.ToString() == gridId);
@@ -70,13 +68,14 @@ public Program() {
         foreach(IMyTextPanel screen in statusScreens) {
             screen.WriteText("No pilot seat!", false);
         }
+
         return;
     }
 
 	controller = controllers[0];
 
     GridTerminalSystem.GetBlocksOfType(batteries, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
-    GridTerminalSystem.GetBlocksOfType(landingGear, block => block.IsFunctional && (landingGearInMainGrid == false || block.CubeGrid.ToString() == gridId));
+    GridTerminalSystem.GetBlocksOfType(landingGear, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
     GridTerminalSystem.GetBlocksOfType(connectors, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
     GridTerminalSystem.GetBlocksOfType(airVents, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
     GridTerminalSystem.GetBlocksOfType(cargoContainers, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
@@ -98,6 +97,8 @@ public Program() {
     GridTerminalSystem.GetBlocksOfType(frontThrusters, block => block.IsFunctional && block.GridThrustDirection == Vector3I.Backward && block.CubeGrid.ToString() == gridId);
     GridTerminalSystem.GetBlocksOfType(backThrusters, block => block.IsFunctional && block.GridThrustDirection == Vector3I.Forward && block.CubeGrid.ToString() == gridId);
 
+    GridTerminalSystem.GetBlocksOfType(allHinges, block => block.IsFunctional && block.CubeGrid.ToString() == gridId);
+
     allThrusters.AddRange(downThrusters);
     allThrusters.AddRange(upThrusters);
     allThrusters.AddRange(leftThrusters);
@@ -118,12 +119,7 @@ public Program() {
 	}
 
 	foreach(IMyGasTank item in hydrogenTanks) {
-        hydrogenCapacity = hydrogenCapacity + item.Capacity;
 		item.Stockpile = false;
-	}
-
-    foreach(IMyCargoContainer item in cargoContainers) {
-        maxCargoVolume = maxCargoVolume + item.GetInventory().MaxVolume.ToIntSafe();
 	}
 
     minThrust = getTotalThrust(downThrusters);
@@ -141,13 +137,6 @@ public Program() {
 
     bool isDocked = getIsDocked();
     bool isLanded = getIsLanded();
-
-    foreach(IMyAirVent vent in airVents) {
-        if(vent.CustomName.Contains("Ext")) {
-            externalAirVent = vent;
-            break;
-        }
-    }
 
     if(isDocked) onDock();
     else if(isLanded) onLand();
@@ -168,6 +157,8 @@ public Program() {
 			return;
 		}
     }
+    
+    Runtime.UpdateFrequency = UpdateFrequency.Update10;
 }
 
 public void Main(string argument, UpdateType updateSource) {
@@ -189,7 +180,6 @@ public void Main(string argument, UpdateType updateSource) {
     int powerLevel = (int)getPowerLevel();
     int oxygenLevel = (int)getGasLevel(oxygenTanks);
     int fuelLevel = (int)getGasLevel(hydrogenTanks);
-    int cargoLevel = getCargoLevel();
     
     bool isDocked = getIsDocked();
     bool isLanded = getIsLanded();
@@ -201,11 +191,13 @@ public void Main(string argument, UpdateType updateSource) {
     else if(isLanded && !wasLanded) onLand();
     else if(!isLanded && wasLanded) onTakeoff();
 
-	if(amInSpace() && externalAirVent != null) {
+	if(amInSpace()) {
 		if(!airventDebounce) {
 			airventDebounce = true;
 
-			externalAirVent.Depressurize = false;
+			foreach(IMyAirVent vent in airVents) {
+				if(vent.CustomName.Contains("Ext")) vent.Depressurize = true;
+        	}
 		}
 	} else {
 		if(airventDebounce) {
@@ -214,42 +206,19 @@ public void Main(string argument, UpdateType updateSource) {
 			foreach(IMyAirVent vent in airVents) {
 				vent.Depressurize = false;
         	}
-
-			externalAirVent.Depressurize = true;
 		}
 	}
 
     String textToShow = "Version " + VERSION + " of Program - " + getWorkingAnimation();
     textToShow = textToShow + "\n\t[" + getFillLevel(powerLevel) + "] " + String.Format("{0,4}", powerLevel) + "% | " + String.Format("{0,8}", "Power");
     if(hasOxygenTanks) textToShow = textToShow + "\n\t[" + getFillLevel(oxygenLevel) + "] " +  String.Format("{0,4}", oxygenLevel) + "% | " + String.Format("{0,8}", "Oxygen");
-    textToShow = textToShow + "\n\t[" + getFillLevel(cargoLevel) + "] " +  String.Format("{0,4}", cargoLevel) + "% | " + String.Format("{0,8}", "Cargo Volume");
-    
-    if(isHydrogenShip) {
-        textToShow = textToShow + "\n\t[" + getFillLevel(fuelLevel) + "] " +  String.Format("{0,4}", fuelLevel) + "% | " + String.Format("{0,8}", "Fuel");
-        textToShow = textToShow + "\n\t" + getHydrogenLifetime();
-        textToShow = textToShow + "\n\tPrev:" + hydrogenTotalPrevious;
-        textToShow = textToShow + "\n\tNow:" + hydrogenTotal;
-    }
-
-    textToShow = textToShow + "\n\tMin Thrust: " + getThrusterLimitPercentage() + "%";
-    
-    if(externalAirVent != null) textToShow = textToShow + "\n\tExternal O2: " + String.Format("{0, 4}", externalAirVent.GetOxygenLevel()) + "%";
-    else textToShow = textToShow + "\n\tNo sensor air vent!";
+    if(isHydrogenShip) textToShow = textToShow + "\n\t[" + getFillLevel(fuelLevel) + "] " +  String.Format("{0,4}", fuelLevel) + "% | " + String.Format("{0,8}", "Fuel");
+    textToShow = textToShow + "\n\tMinimum Thruster Usage: " + getThrusterLimitPercentage() + "%";
 
     String statusText = doStatusLights(powerLevel, oxygenLevel, fuelLevel);
     textToShow = textToShow + "\n" + statusText;
 
     Log(textToShow);
-}
-
-int getCargoLevel() {
-    int cargoVolume = 0;
-
-    foreach(IMyCargoContainer item in cargoContainers) {
-        cargoVolume = cargoVolume + item.GetInventory().CurrentVolume.ToIntSafe();
-	}
-
-    return (int)Math.Floor(((double)cargoVolume / (double)maxCargoVolume * 100));
 }
 
 int getThrusterLimitPercentage() {
@@ -288,52 +257,14 @@ double getPowerLevel() {
 double getGasLevel(List<IMyGasTank> gasTanks) {
     int maxFluid = 0;
     int currentFluid = 0;
-    bool hydrogen = false;
 
     foreach(IMyGasTank item in gasTanks) {
         maxFluid = maxFluid + (int)item.Capacity;
         currentFluid = currentFluid + (int)(item.FilledRatio * item.Capacity);
-
-        if(item.CustomName.Contains("Hydrogen") && !hydrogen) hydrogen = true;
-    }
-
-    if(hydrogen) {
-        hydrogenTotalPrevious = hydrogenTotal;
-        hydrogenTotal = (double)currentFluid;
     }
 
     double percentage = ((double)currentFluid / (double)(maxFluid == 0 ? 1 : maxFluid));
     return percentage = Math.Floor(percentage * 100);
-}
-
-string getHydrogenLifetime() {
-    double delta = hydrogenTotal - hydrogenTotalPrevious;
-    if (delta == 0) {
-        return "Hydrogen level is stable";
-    }
-
-    double ratePerSecond = delta / (10 / 60);
-    double timeToChange = Math.Abs(hydrogenTotal / ratePerSecond);
-
-    string timeString = formatTime(timeToChange);
-    string action = delta > 0 ? "Refueled in " : "Depleted in ";
-
-    return action + timeString;
-}
-
-string formatTime(double seconds) {
-    return seconds + " seconds";
-    // if (seconds < 60) {
-    //     return $"{Math.Round(seconds)} seconds";
-    // }
-
-    // double minutes = seconds / 60;
-    // if (minutes < 60) {
-    //     return $"{Math.Round(minutes)} minutes";
-    // }
-
-    // double hours = minutes / 60;
-    // return $"{Math.Round(hours)} hours";
 }
 
 bool getIsDocked() {
@@ -378,6 +309,8 @@ bool getWasLanded() {
 }
 
 void onLand() {
+    raiseWings();
+
     foreach(IMyLandingGear connector in landingGear) {
         if(!connector.CustomData.Contains("WasLanded;")) connector.CustomData = connector.CustomData + "WasLanded;";
     }
@@ -386,10 +319,8 @@ void onLand() {
         thruster.Enabled = false;
     }
 
-    if(hasAirlock && amInSpace() || !amInSpace()) {
-        foreach(IMyDoor door in outerDoors) {
-            door.Enabled = true;
-        }
+    foreach(IMyDoor door in outerDoors) {
+        door.Enabled = true;
     }
 }
 
@@ -401,6 +332,72 @@ string getWorkingAnimation() {
 		case 3: return "\\";
 		default: return "x";
 	}
+}
+
+void raiseWings(bool up) {
+    foreach(IMyMotorStator hinge in allHinges) {
+        float velocity = 0;
+        
+        if(hinge.CustomName.Contains("Wing")) {
+            if(hinge.CustomName.Contains("Left"))
+                velocity = -1.5f
+            else
+                velocity = 1.5f
+        }
+
+        if(!up) velocity = velocity * -1;
+
+        if(velocity != 0) {
+            hinge.RotorLock = false;
+            hinge.TargetVelocityRPM = velocity;
+        }
+    }
+}
+
+void raiseRamp(bool up) {
+    foreach(IMyMotorStator hinge in allHinges) {
+        float velocity = 0;
+        
+        if(hinge.CustomName.Contains("Ramp")) {
+            velocity = 1.5f
+        }
+
+        if(!up) velocity = velocity * -1;
+
+        if(velocity != 0) {
+            hinge.RotorLock = false;
+            hinge.TargetVelocityRPM = velocity;
+        }
+    }
+}
+
+void raiseGear(bool up) {
+    foreach(IMyLandingGear gear in landingGear) {
+        if(gear.IsLocked && up) return;
+    }
+
+    foreach(IMyLandingGear gear in landingGear) {
+        if(up) gear.Enabled = false;
+        else gear.Enabled = true;
+    }
+
+    foreach(IMyMotorStator hinge in allHinges) {
+        float velocity = 0;
+        
+        if(hinge.CustomName.Contains("Wing")) {
+            if(hinge.CustomName.Contains("Left"))
+                velocity = 2f
+            else
+                velocity = -2f
+        }
+
+        if(!up) velocity = velocity * -1;
+
+        if(velocity != 0) {
+            hinge.RotorLock = false;
+            hinge.TargetVelocityRPM = velocity;
+        }
+    }
 }
 
 void onTakeoff() {
@@ -462,10 +459,8 @@ void onDock() {
         light.Enabled = false;
     }
 
-    if(hasAirlock && amInSpace() || !amInSpace()) {
-        foreach(IMyDoor door in outerDoors) {
-            door.Enabled = true;
-        }
+    foreach(IMyDoor door in outerDoors) {
+        door.Enabled = true;
     }
 }
 
@@ -584,13 +579,12 @@ string doStatusLights(int powerLevel, int oxygenLevel, int fuelLevel) {
 }
 
 bool amInSpace() {
-    if(externalAirVent == null) return false;
-    return externalAirVent.GetOxygenLevel() < 0.5;
+    return (controller.GetNaturalGravity().Sum > -6);
 }
 
 bool notAirtight() {
     foreach(IMyAirVent item in airVents) {
-        if(item.Enabled && !item.CanPressurize && item.PressurizationEnabled && item.CustomName.Contains("Int")) return true;
+        if(item.Enabled && !item.CanPressurize && item.PressurizationEnabled) return true;
     }
 
     return false;
@@ -599,7 +593,6 @@ bool notAirtight() {
 void Log(string text) {
     IMyTextSurfaceProvider cockpitScreen = (IMyTextSurfaceProvider)GridTerminalSystem.GetBlockWithName(controller.CustomName);
     cockpitScreen.GetSurface(0).WriteText(text, false);
-    Me.GetSurface(0).WriteText(text, false);
     foreach(IMyTextPanel screen in statusScreens) {
         screen.WriteText(text, false);
     }
